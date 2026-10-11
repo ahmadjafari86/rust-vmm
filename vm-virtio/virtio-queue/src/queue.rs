@@ -779,6 +779,80 @@ mod tests {
 
     use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
 
+    fn check_add_used<Q: QueueT>(
+        q: &mut Q,
+        mem: &GuestMemoryMmap<()>,
+        vq: &MockSplitQueue<'_, GuestMemoryMmap<()>>,
+    ) {
+        let invalid_index = q.size();
+        let previous_next_used = q.next_used();
+        let previous_used_idx = q.used_idx(mem, Ordering::Acquire).unwrap();
+
+        assert!(q.add_used(mem, invalid_index, 0x1000).is_err());
+
+        assert_eq!(q.next_used(), previous_next_used);
+        assert_eq!(
+            q.used_idx(mem, Ordering::Acquire).unwrap(),
+            previous_used_idx
+        );
+
+        let previous_next_used = q.next_used();
+
+        q.add_used(mem, 1, 0x1000).unwrap();
+
+        assert_eq!(q.next_used(), previous_next_used + 1);
+        assert_eq!(
+            q.used_idx(mem, Ordering::Acquire).unwrap(),
+            Wrapping(previous_next_used + 1)
+        );
+
+        let used_elem = vq
+            .used()
+            .ring()
+            .ref_at(previous_next_used as usize)
+            .unwrap()
+            .load();
+        assert_eq!(used_elem.id(), 1);
+        assert_eq!(used_elem.len(), 0x1000);
+    }
+
+    #[test]
+    fn test_queue_add_used() {
+        let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+
+        let vq = MockSplitQueue::new(&mem, 16);
+        let mut q: Queue = vq.create_queue().unwrap();
+
+        check_add_used(&mut q, &mem, &vq);
+    }
+
+    #[test]
+    fn test_queue_sync_add_used() {
+        let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+
+        let vq = MockSplitQueue::new(&mem, 256);
+        let mut q: crate::QueueSync = vq.create_queue().unwrap();
+
+        assert_eq!(q.max_size(), 256);
+        assert_eq!(q.size(), 256);
+
+        q.set_size(128);
+
+        assert_eq!(q.size(), 128);
+        assert_eq!(q.max_size(), 256);
+
+        q.set_next_avail(5);
+        assert_eq!(q.next_avail(), 5);
+
+        assert_eq!(q.avail_idx(&mem, Ordering::Acquire).unwrap(), Wrapping(0));
+        assert_eq!(q.used_idx(&mem, Ordering::Acquire).unwrap(), Wrapping(0));
+
+        q.set_next_used(3);
+        q.set_event_idx(true);
+        assert!(q.is_valid(&mem));
+        check_add_used(&mut q, &mem, &vq);
+    }
+
     fn check_reset<Q: QueueT>(q: &mut Q, mem: &GuestMemoryMmap<()>) {
         let max_size = q.max_size();
 
@@ -917,30 +991,6 @@ mod tests {
         let addr = vq.used_addr().0;
         q.set_used_ring_address(Some(addr as u32), Some((addr >> 32) as u32));
         assert!(q.is_valid(m));
-    }
-
-    #[test]
-    fn test_add_used() {
-        let mem = &GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
-        let vq = MockSplitQueue::new(mem, 16);
-        let mut q: Queue = vq.create_queue().unwrap();
-
-        assert_eq!(q.used_idx(mem, Ordering::Acquire).unwrap(), Wrapping(0));
-        assert_eq!(u16::from_le(vq.used().idx().load()), 0);
-
-        // index too large
-        assert!(q.add_used(mem, 16, 0x1000).is_err());
-        assert_eq!(u16::from_le(vq.used().idx().load()), 0);
-
-        // should be ok
-        q.add_used(mem, 1, 0x1000).unwrap();
-        assert_eq!(q.next_used, Wrapping(1));
-        assert_eq!(q.used_idx(mem, Ordering::Acquire).unwrap(), Wrapping(1));
-        assert_eq!(u16::from_le(vq.used().idx().load()), 1);
-
-        let x = vq.used().ring().ref_at(0).unwrap().load();
-        assert_eq!(x.id(), 1);
-        assert_eq!(x.len(), 0x1000);
     }
 
     #[test]
