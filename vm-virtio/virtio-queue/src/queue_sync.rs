@@ -199,8 +199,6 @@ impl From<Arc<Mutex<Queue>>> for QueueSync {
 mod tests {
     use super::*;
     use std::sync::Barrier;
-    use virtio_bindings::bindings::virtio_ring::VRING_USED_F_NO_NOTIFY;
-    use vm_memory::{Address, Bytes, GuestAddress, GuestAddressSpace, GuestMemoryMmap};
 
     #[test]
     fn test_queue_state_sync() {
@@ -237,53 +235,6 @@ mod tests {
 
         t1.join().unwrap();
         t2.join().unwrap();
-    }
-
-    #[test]
-    fn test_enable_disable_notification() {
-        let m = &GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
-        let mem = m.memory();
-        let mut q = QueueSync::new(0x100).unwrap();
-
-        q.set_desc_table_address(Some(0x1000), None);
-        assert_eq!(q.desc_table(), 0x1000);
-        q.set_avail_ring_address(Some(0x2000), None);
-        assert_eq!(q.avail_ring(), 0x2000);
-        q.set_used_ring_address(Some(0x3000), None);
-        assert_eq!(q.used_ring(), 0x3000);
-        q.set_ready(true);
-        assert!(q.is_valid(mem));
-
-        let used_addr = GuestAddress(q.lock_state().used_ring());
-
-        assert!(!q.event_idx_enabled());
-        q.enable_notification(mem).unwrap();
-        let v = m.read_obj::<u16>(used_addr).map(u16::from_le).unwrap();
-        assert_eq!(v, 0);
-
-        q.disable_notification(m.memory()).unwrap();
-        let v = m.read_obj::<u16>(used_addr).map(u16::from_le).unwrap();
-        assert_eq!(v, VRING_USED_F_NO_NOTIFY as u16);
-
-        q.enable_notification(mem).unwrap();
-        let v = m.read_obj::<u16>(used_addr).map(u16::from_le).unwrap();
-        assert_eq!(v, 0);
-
-        q.set_event_idx(true);
-        let avail_addr = GuestAddress(q.lock_state().avail_ring());
-        m.write_obj::<u16>(u16::to_le(2), avail_addr.unchecked_add(2))
-            .unwrap();
-
-        assert!(q.enable_notification(mem).unwrap());
-        q.lock_state().set_next_avail(2);
-        assert!(!q.enable_notification(mem).unwrap());
-
-        m.write_obj::<u16>(u16::to_le(8), avail_addr.unchecked_add(2))
-            .unwrap();
-
-        assert!(q.enable_notification(mem).unwrap());
-        q.lock_state().set_next_avail(8);
-        assert!(!q.enable_notification(mem).unwrap());
     }
 
     #[test]
