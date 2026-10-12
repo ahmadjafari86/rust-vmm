@@ -779,6 +779,81 @@ mod tests {
 
     use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
 
+    fn check_notification<Q: QueueT>(
+        q: &mut Q,
+        mem: &GuestMemoryMmap<()>,
+        used_addr: GuestAddress,
+        avail_addr: GuestAddress,
+    ) {
+        assert!(!q.event_idx_enabled());
+
+        q.enable_notification(mem).unwrap();
+        assert!(!q.event_idx_enabled());
+
+        q.disable_notification(mem).unwrap();
+        assert!(!q.event_idx_enabled());
+
+        q.enable_notification(mem).unwrap();
+
+        let flags = mem.read_obj::<u16>(used_addr).map(u16::from_le).unwrap();
+
+        assert_eq!(flags, 0);
+
+        q.disable_notification(mem).unwrap();
+
+        let flags = mem.read_obj::<u16>(used_addr).map(u16::from_le).unwrap();
+
+        assert_eq!(flags, VRING_USED_F_NO_NOTIFY as u16);
+
+        q.enable_notification(mem).unwrap();
+
+        let flags = mem.read_obj::<u16>(used_addr).map(u16::from_le).unwrap();
+
+        assert_eq!(flags, 0);
+
+        q.set_event_idx(true);
+
+        mem.write_obj::<u16>(u16::to_le(2), avail_addr.unchecked_add(2))
+            .unwrap();
+
+        assert!(q.enable_notification(mem).unwrap());
+
+        q.set_next_avail(2);
+
+        assert!(!q.enable_notification(mem).unwrap());
+
+        mem.write_obj::<u16>(u16::to_le(8), avail_addr.unchecked_add(2))
+            .unwrap();
+
+        assert!(q.enable_notification(mem).unwrap());
+
+        q.set_next_avail(8);
+
+        assert!(!q.enable_notification(mem).unwrap());
+    }
+
+    #[test]
+    fn test_queue_notification() {
+        let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+
+        let vq = MockSplitQueue::new(&mem, 16);
+        let mut q: Queue = vq.create_queue().unwrap();
+
+        check_notification(&mut q, &mem, vq.used_addr(), vq.avail_addr());
+    }
+
+    #[test]
+    fn test_queue_sync_notification() {
+        let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+
+        let vq = MockSplitQueue::new(&mem, 256);
+        let mut q: crate::QueueSync = vq.create_queue().unwrap();
+
+        assert!(q.is_valid(&mem));
+
+        check_notification(&mut q, &mem, vq.used_addr(), vq.avail_addr());
+    }
+
     fn check_add_used<Q: QueueT>(
         q: &mut Q,
         mem: &GuestMemoryMmap<()>,
@@ -1071,45 +1146,6 @@ mod tests {
         // (i.e. `next_used` - `num_added`) and the current `next_used`, thus suggesting that we
         // need to notify the driver.
         assert!(q.needs_notification(mem).unwrap());
-    }
-
-    #[test]
-    fn test_enable_disable_notification() {
-        let mem = &GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
-        let vq = MockSplitQueue::new(mem, 16);
-
-        let mut q: Queue = vq.create_queue().unwrap();
-        let used_addr = vq.used_addr();
-
-        assert!(!q.event_idx_enabled);
-
-        q.enable_notification(mem).unwrap();
-        let v = mem.read_obj::<u16>(used_addr).map(u16::from_le).unwrap();
-        assert_eq!(v, 0);
-
-        q.disable_notification(mem).unwrap();
-        let v = mem.read_obj::<u16>(used_addr).map(u16::from_le).unwrap();
-        assert_eq!(v, VRING_USED_F_NO_NOTIFY as u16);
-
-        q.enable_notification(mem).unwrap();
-        let v = mem.read_obj::<u16>(used_addr).map(u16::from_le).unwrap();
-        assert_eq!(v, 0);
-
-        q.set_event_idx(true);
-        let avail_addr = vq.avail_addr();
-        mem.write_obj::<u16>(u16::to_le(2), avail_addr.unchecked_add(2))
-            .unwrap();
-
-        assert!(q.enable_notification(mem).unwrap());
-        q.next_avail = Wrapping(2);
-        assert!(!q.enable_notification(mem).unwrap());
-
-        mem.write_obj::<u16>(u16::to_le(8), avail_addr.unchecked_add(2))
-            .unwrap();
-
-        assert!(q.enable_notification(mem).unwrap());
-        q.next_avail = Wrapping(8);
-        assert!(!q.enable_notification(mem).unwrap());
     }
 
     #[test]
